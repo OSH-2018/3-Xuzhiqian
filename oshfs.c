@@ -43,7 +43,7 @@ struct stat_block {
 
 struct block {
     big_int next;
-    char data[BLOCK_DATA_SIZE];
+    unsigned char data[BLOCK_DATA_SIZE];
 };
 
 
@@ -65,11 +65,11 @@ void set_block_bit(big_int block_id, int bit) {
     if (bit) {
         
         _op = 1ULL << block_id % 64;
-       //printf("use block %llu, group %llu: %llx\n",block_id,group_id,((big_int*)blocks[METABLOCK_START + group_id/GROUP_NUM_PER_BLOCK])[group_id % GROUP_NUM_PER_BLOCK] |= _op);
+       ((big_int*)blocks[METABLOCK_START + group_id/GROUP_NUM_PER_BLOCK])[group_id % GROUP_NUM_PER_BLOCK] |= _op;
     }
     else {
         _op = ~(1ULL << block_id % 64);
-        //printf("free block %llu, group %llu\n: %llx\n",block_id,group_id,((big_int*)blocks[METABLOCK_START + group_id/GROUP_NUM_PER_BLOCK])[group_id % GROUP_NUM_PER_BLOCK] &= _op);
+        ((big_int*)blocks[METABLOCK_START + group_id/GROUP_NUM_PER_BLOCK])[group_id % GROUP_NUM_PER_BLOCK] &= _op;
     }
 }
 
@@ -147,7 +147,7 @@ big_int locate(struct filenode * node, off_t offset) {
     //location out of section
     p = node->content.tail;
     struct block * p_b;
-    for (int i = ((node->st.st_size-1)/BLOCK_DATA_SIZE+1)*BLOCK_DATA_SIZE;i<offset;i+=BLOCK_DATA_SIZE)
+    for (int i = ((node->st.st_size+BLOCK_DATA_SIZE-1)/BLOCK_DATA_SIZE)*BLOCK_DATA_SIZE;i<offset;i+=BLOCK_DATA_SIZE)
         p = get_next_block(node,p);
     return p;
 }
@@ -169,7 +169,7 @@ static int create_filenode(const char *filename, const struct stat st)
 {
     big_int block_id_for_filenode = allocate_block();
     if (block_id_for_filenode == -1) {
-        //printf("no more space?kidding?\n");
+        printf("no more space?kidding?\n");
         return 0;   //no more space
     }
 
@@ -212,7 +212,7 @@ void *oshfs_init()
     struct stat_block * super = (struct stat_block *) blocks[STATBLOCK_START];
     super->block_num = BLOCK_NUM;
     super->block_used = 1 + 1+ METABLOCK_NUM;
-    //printf("init done! %llu\n",super->block_used);
+    printf("init done! %llu\n",super->block_used);
     return NULL;
 }
 
@@ -280,13 +280,18 @@ if (request_block_num > rest_block_num) {
    }
 
     big_int location_block_id = locate(node,offset);
+
     big_int location_bytewise = sizeof(big_int) + offset % BLOCK_DATA_SIZE;
+
+    if (offset % BLOCK_DATA_SIZE == 0 && offset != 0)
+        location_block_id = get_next_block(node,location_block_id);
+    
     big_int wsize = 0;
     while (wsize < size) {
-        char * location = location_bytewise + (char *)blocks[location_block_id];
+        unsigned char * location = location_bytewise + (unsigned char *)blocks[location_block_id];
 
         //the last block
-        if (BLOCK_SIZE - location_bytewise >= size - wsize) {
+        if (BLOCK_SIZE - location_bytewise > size - wsize) {
 
             //int i=0,j=size-wsize;
 
@@ -302,16 +307,21 @@ if (request_block_num > rest_block_num) {
 
         }
         else {
+            //printf("write progress:%llu/%llu------>",wsize,size);
             memcpy(location,buf+ wsize,BLOCK_SIZE - location_bytewise);
             wsize += BLOCK_SIZE - location_bytewise;
+
+            //printf("%llu/%llu     ",wsize,size);
+            //printf("block chain:%llu----->",location_block_id);
             location_block_id = get_next_block(node,location_block_id);
+            //printf("%llu\n",location_block_id);
             location_bytewise = sizeof(big_int);
         }
     }
     size_t point = (node->st.st_size < offset)?node->st.st_size:offset;
     node->st.st_size=(node->st.st_size>point+size)?node->st.st_size:point+size;
     
-    //printf("write finish, file size:%lu\n",node->st.st_size);
+    //printf("write finish, file size:%lu\n",node->st.st_size / 1024);
     return wsize;
 }
 
@@ -364,20 +374,22 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
 
     big_int location_block_id = locate(node,offset);
     big_int location_bytewise = sizeof(big_int) + offset % BLOCK_DATA_SIZE;
+
+    if (offset % BLOCK_DATA_SIZE == 0 && offset != 0) {
+        location_block_id = ((struct block *)blocks[location_block_id])->next;
+        if (location_block_id == 0)
+            return -E2BIG;
+    }
+
     big_int rsize = 0;
 
+    
     while (rsize < size) {
-        //printf("read progress:%llu/%llu\n",rsize,size);
-        char * location = location_bytewise + (char *)blocks[location_block_id];
+        unsigned char * location = location_bytewise + (unsigned char *)blocks[location_block_id];
         //the last block
-        if (BLOCK_SIZE - location_bytewise >= size - rsize) {
+        if (BLOCK_SIZE - location_bytewise > size - rsize) {
             memcpy(buf+rsize, location, size - rsize);
-            /*
-            printf("-------------last block read------\n");
-            int i=0,j=size-rsize;
-            while (i<j) printf("%d ",location[i++]);
-            printf("----------------------------------\n");*/
-
+            
             rsize = size;
         }
         else {
@@ -385,8 +397,8 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
             rsize += BLOCK_SIZE - location_bytewise;
             location_block_id = ((struct block *)blocks[location_block_id])->next;
             location_bytewise = sizeof(big_int);
-
-            if (location_block_id == 0) return -E2BIG;
+            if (location_block_id == 0)
+                return -E2BIG;
         }
     }
     return rsize;
