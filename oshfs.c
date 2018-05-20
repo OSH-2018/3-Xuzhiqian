@@ -325,6 +325,20 @@ static int oshfs_open(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
+static int oshfs_rename(const char *old, const char *new) {
+    printf("changing name from %s to %s\n",old,new);
+    struct filenode * node = get_filenode_by_path(old + 1);
+    if (!node) return -ENOENT;
+
+    char * name = new + 1, * pos;
+    while (pos = strchr(name,'/'))
+        name = pos + 1;
+    printf("new name:%s\n",name);
+
+    memcpy(node->filename,name,strlen(name));
+    return 0;
+}
+
 static int oshfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     //printf("writing file:%s\n",path+1);
@@ -542,6 +556,7 @@ static const struct fuse_operations op = {
     .unlink = oshfs_unlink,
     .rmdir = oshfs_rmdir,
     .mkdir = oshfs_mkdir,
+    .rename = oshfs_rename,
 };
 
 int main(int argc, char *argv[])
