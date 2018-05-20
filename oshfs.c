@@ -423,20 +423,6 @@ static int oshfs_open(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
-static int oshfs_rename(const char *old, const char *new) {
-    printf("changing name from %s to %s\n",old,new);
-    struct filenode * node = get_filenode_by_path(old + 1);
-    if (!node) return -ENOENT;
-
-    char * name = new + 1, * pos;
-    while (pos = strchr(name,'/'))
-        name = pos + 1;
-    printf("new name:%s\n",name);
-
-    memcpy(node->filename,name,strlen(name));
-    return 0;
-}
-
 static int oshfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     //printf("writing file:%s\n",path+1);
@@ -596,6 +582,7 @@ static int oshfs_unlink(const char *path)
 }
 
 static int oshfs_link(const char * src, const char * alias) {
+    if (get_filenode_by_path(alias + 1)) return 0;
     struct filenode * org = get_filenode_by_path(src + 1);
     //cannot link to null or dir
     if (!org || org->dir) return -ENOENT;
@@ -636,6 +623,22 @@ static int oshfs_readlink(const char * path, char *buf, size_t size) {
     }
     if (oshfs_read(path , buf , size , 0 , NULL)<0)
         return -ENOSPC;
+    return 0;
+}
+
+static int oshfs_rename(const char *old, const char *new) {
+    printf("changing name from %s to %s\n",old,new);
+
+    struct filenode * fnode = get_filenode_by_path(new + 1);
+    if (fnode) {
+        if (fnode->dir)
+            unlink_dir(fnode);
+        else
+            unlink_file(fnode);
+    }
+
+    oshfs_link(old , new);
+    oshfs_unlink(old);
     return 0;
 }
 
