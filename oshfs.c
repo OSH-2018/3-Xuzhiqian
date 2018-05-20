@@ -30,7 +30,10 @@ struct filenode {
     char filename[MAX_FILENAME_LENGTH+1];
     struct content_t content;
 
-    struct filenode * next;
+    int dir;
+    struct filenode * child,parent;
+    struct filenode * next,prev;
+
     big_int self_block_id;
 
     struct stat st;
@@ -46,6 +49,21 @@ struct block {
     unsigned char data[BLOCK_DATA_SIZE];
 };
 
+static int get_default_stat(int is_dir) {
+    struct stat st;
+    memset(&st, 0, sizeof(struct stat));
+    if (is_dir)
+        st.st_mode = S_IFDIR | 0755;
+    else
+        st.st_mode = S_IFREG | 0755;
+    st.st_uid = fuse_get_context()->uid;
+    st.st_gid = fuse_get_context()->gid;
+    st.st_nlink = 1;
+    st.st_size = 0;
+    st.st_blksize = BLOCK_DATA_SIZE;
+    st.st_blocks = 0;
+    return st;
+}
 
 void * blocks[BLOCK_NUM];
 
@@ -152,11 +170,18 @@ big_int locate(struct filenode * node, off_t offset) {
     return p;
 }
 
-static struct filenode *get_filenode(const char *name)
+static struct filenode *get_filenode_by_path(const char *path)
 {
-    struct filenode *node = (struct filenode *)blocks[ROOTBLOCK_START];
+    if (path[0]==0) return (struct filenode *)blocks[ROOTBLOCK_START];
+    struct filenode * parent = get_parent_dir_by_path(NULL, path);
+    struct filenode *node = parent->child;
+
+    char * name = path;
+    while (pos = strchr(name,'/'))
+        name = pos + 1;
+
     while(node) {
-        if(strcmp(node->filename, name + 1) != 0)
+        if(strcmp(node->filename, name) != 0)
             node = node->next;
         else {
             return node;
@@ -165,29 +190,54 @@ static struct filenode *get_filenode(const char *name)
     return NULL;
 }
 
-static int create_filenode(const char *filename, const struct stat st)
+//path not includ root '/'
+struct filenode * get_parent_dir_by_path(struct filenode * parent,const char *path) {
+
+    if (!parent) parent = (struct filenode *)blocks[ROOTBLOCK_START];
+    char name[MAX_FILENAME_LENGTH];
+    memset(name,0,sizeof(name));
+    char * pos = strchr(path,'/');
+    if (pos == NULL)
+        return parent;
+    else
+        memcpy(name , path , (pos-path)*sizeof(char));
+
+    struct filenode * child = parent->child;
+    while (child) {
+        if (child->dir && strcmp(name,child->filename)==0)
+            return get_parent_dir(child , pos + 1);
+        child = child->next;
+    }
+    return parent;
+}
+
+static int create_filenode(const char *path, const struct stat st, int is_dir)
 {
+
     big_int block_id_for_filenode = allocate_block();
     if (block_id_for_filenode == -1) {
         printf("no more space?kidding?\n");
         return 0;   //no more space
     }
 
+    char * name = path;
+    while (pos = strchr(name,'/'))
+        name = pos + 1;
+
     struct filenode *new = (struct filenode *)blocks[block_id_for_filenode];
-    strncpy(new->filename, filename, MAX_FILENAME_LENGTH + 1);
+    new->parent = get_parent_dir_by_path(NULL , path);
+
+    strncpy(new->filename, name, MAX_FILENAME_LENGTH + 1);
     new->st = st;
+    new->dir = is_dir;
     new->content.head = 0;
     new->content.tail = 0;
     new->self_block_id = block_id_for_filenode;
-    new->next = (struct filenode *)blocks[ROOTBLOCK_START];
-    blocks[ROOTBLOCK_START] = new;
-
-
-    struct filenode * p = (struct filenode *)blocks[ROOTBLOCK_START];
-    while (p) {
-        p = p->next;
-        if (p==(struct filenode *)blocks[ROOTBLOCK_START]) break;
-    }
+    new->child=  = NULL;
+    new->next = new->parent->child;
+    new->prev = NULL;
+    new->next->prev = new;
+    new->parent->child = new;
 
     return 0;
 }
@@ -196,7 +246,14 @@ void *oshfs_init()
 {
     //allocate root pointer
     blocks[ROOTBLOCK_START] = new_block();
-    blocks[ROOTBLOCK_START] = NULL;
+    struct filenode *root = (struct filenode *)blocks[ROOTBLOCK_START];
+    root->filename[0]='/'; root->filename[1]='\0';
+    root->st = get_default_stat(1);
+    root->child = root;
+    root->next = NULL;
+    root->prev = NULL;
+    root->parent = NULL;
+    root->dir = 1;
 
     //allocate stat block
     blocks[STATBLOCK_START] = new_block();
@@ -219,21 +276,18 @@ void *oshfs_init()
 static int oshfs_getattr(const char *path, struct stat *stbuf)
 {
     int ret = 0;
-    struct filenode *node = get_filenode(path);
-    if(strcmp(path, "/") == 0) {
-        memset(stbuf, 0, sizeof(struct stat));
-        stbuf->st_mode = S_IFDIR | 0755;
-    } else if(node) {
+    struct filenode *node = get_filenode_by_path(path + 1);
+    if(node)
         memcpy(stbuf, &(node->st), sizeof(struct stat));
-    } else {
+    else
         ret = -ENOENT;
-    }
     return ret;
 }
 
 static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
-    struct filenode * node = (struct filenode *)blocks[ROOTBLOCK_START];
+    struct filenode * dir = get_filenode_by_path(path + 1);
+    struct filenode * node = dir->child;
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
     while(node) {
@@ -243,17 +297,18 @@ static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, of
     return 0;
 }
 
+static int oshfs_mkdir(const char *path, mode_t mode) {
+    create_filenode(path + 1, get_default_stat(1), 1);
+    return 0;
+}
+
+static int oshfs_rmdir(const char *path) {
+    return unlink_dir(get_filenode_by_path(path + 1));
+}
+
 static int oshfs_mknod(const char *path, mode_t mode, dev_t dev)
 {
-    struct stat st;
-    st.st_mode = S_IFREG | 0644;
-    st.st_uid = fuse_get_context()->uid;
-    st.st_gid = fuse_get_context()->gid;
-    st.st_nlink = 1;
-    st.st_size = 0;
-    st.st_blksize = BLOCK_DATA_SIZE;
-    st.st_blocks = 0;
-    create_filenode(path + 1, st);
+    create_filenode(path + 1, get_default_stat(0), 0);
     return 0;
 }
 
@@ -264,9 +319,8 @@ static int oshfs_open(const char *path, struct fuse_file_info *fi)
 
 static int oshfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-    struct filenode *node = get_filenode(path);
-    if (node == NULL)
-        return -ENOENT;
+    struct filenode *node = get_filenode_by_path(path+1);
+    if (!node) return -ENOENT;
 
 
     //printf("write file:%s  write offset:%lu  write size:%lu\n",path,offset,size);
@@ -334,8 +388,8 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 static int oshfs_truncate(const char *path, off_t size)
 {
     //printf("\n\n TRUNCATE!!!\n\n");
-    struct filenode * node = get_filenode(path);
-    if (node==NULL) return -ENOENT;
+    struct filenode * node = get_filenode_by_path(path+1);
+    if (!node) return -ENOENT;
 
     if (node->content.head == 0) {  //empty file
         if (size == 0) return 0;
@@ -371,8 +425,8 @@ static int oshfs_truncate(const char *path, off_t size)
 
 static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-    struct filenode *node = get_filenode(path);
-    if (node == NULL) return -ENOENT;
+    struct filenode *node = get_filenode_by_path(path+1);
+    if (!node) return -ENOENT;
     if (offset > node->st.st_size)
         return 0;
 
@@ -410,43 +464,54 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
     return rsize;
 }
 
+static int unlink_file(struct filenode * node) {
+    if (!node) return -ENOENT;
+    if (node->dir) return -ENOENT;
+
+    if (node->prev)
+        node->prev->next = node->next;
+    if (node->next)
+        node->next->prev = node->prev;
+
+    big_int block_to_free = node->content.head;
+    big_int next_block_to_free;
+
+    while (block_to_free) {
+        next_block_to_free = ((struct block *)blocks[block_to_free])->next;
+        free_block(block_to_free);
+        block_to_free = next_block_to_free;
+    }
+    free_block(node->self_block_id);
+    return 0;
+}
+
+//Recursively
+static int unlink_dir(struct filenode * dir) {
+    if (!dir) return -ENOENT;
+    if (!dir->dir) return -ENOENT;
+
+    if (dir->prev)
+        dir->prev->next = dir->next;
+    if (dir->next)
+        dir->next->prev = dir->prev;
+
+    struct filenode * child = dir->child;
+    struct filenode * next_child;
+    while (child) {
+        next_child = child->next;
+        if (child->dir)
+            unlink_dir(child);
+        else
+            unlink_file(child);
+        child = next_child;
+    }
+    free_block(dir->self_block_id);
+    return 0;
+}
+
 static int oshfs_unlink(const char *path)
 {
-    struct filenode *node = (struct filenode *)blocks[ROOTBLOCK_START];
-    if (node==NULL)
-        return -ENOENT;
-
-    big_int content_to_clear;
-    big_int block_id_to_clear;
-    int flag = 0;
-    if (strcmp(node->filename, path+1) == 0) {
-        content_to_clear = node->content.head;
-        block_id_to_clear = node->self_block_id;
-        blocks[ROOTBLOCK_START] = node->next;
-        flag = 1;
-    }
-    else {
-        while (node->next) {
-            if (strcmp(node->next->filename, path+1) == 0) {
-                block_id_to_clear = node->next->self_block_id;
-                content_to_clear = node->next->content.head;
-                node->next = node->next->next;
-                free_block(block_id_to_clear);
-                flag = 1;
-                break;
-            }
-            else node = node->next;
-        }
-    }
-    if (!flag) return -ENOENT;
-
-    big_int next;
-    while (content_to_clear) {
-        next = ((struct block *)blocks[content_to_clear])->next;
-        free_block(content_to_clear);
-        content_to_clear = next;
-    }
-    return 0;
+    return unlink_file(get_filenode_by_path(path + 1));
 }
 
 static const struct fuse_operations op = {
@@ -459,6 +524,8 @@ static const struct fuse_operations op = {
     .truncate = oshfs_truncate,
     .read = oshfs_read,
     .unlink = oshfs_unlink,
+    .rmdir = oshfs_rmdir,
+    .mkdir = oshfs.mkdir,
 };
 
 int main(int argc, char *argv[])
