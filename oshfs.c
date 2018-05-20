@@ -173,7 +173,7 @@ big_int locate(struct filenode * node, off_t offset) {
 }
 
 struct filenode *get_parent_dir_by_path(struct filenode * parent,const char *path) {
-
+    //printf("getting parent dir by path:%s\n",path);
     if (!parent) parent = (struct filenode *)blocks[ROOTBLOCK_START];
     char name[MAX_FILENAME_LENGTH];
     memset(name,0,sizeof(name));
@@ -194,6 +194,7 @@ struct filenode *get_parent_dir_by_path(struct filenode * parent,const char *pat
 
 struct filenode *get_filenode_by_path(const char *path)
 {
+    //printf("getting file node by path:%s\n",path);
     if (path[0]==0) return (struct filenode *)blocks[ROOTBLOCK_START];
     struct filenode * parent = get_parent_dir_by_path(NULL, path);
     struct filenode *node = parent->child;
@@ -217,7 +218,7 @@ static int create_filenode(const char *path, const struct stat st, int is_dir)
 
     big_int block_id_for_filenode = allocate_block();
     if (block_id_for_filenode == -1) {
-        printf("no more space?kidding?\n");
+        //printf("no more space?kidding?\n");
         return 0;   //no more space
     }
 
@@ -237,7 +238,8 @@ static int create_filenode(const char *path, const struct stat st, int is_dir)
     new->child = NULL;
     new->next = new->parent->child;
     new->prev = NULL;
-    new->next->prev = new;
+    if (new->next)
+        new->next->prev = new;
     new->parent->child = new;
 
     return 0;
@@ -250,7 +252,7 @@ void *oshfs_init()
     struct filenode *root = (struct filenode *)blocks[ROOTBLOCK_START];
     root->filename[0]='/'; root->filename[1]='\0';
     root->st = get_default_stat(1);
-    root->child = root;
+    root->child = NULL;
     root->next = NULL;
     root->prev = NULL;
     root->parent = NULL;
@@ -270,12 +272,13 @@ void *oshfs_init()
     struct stat_block * super = (struct stat_block *) blocks[STATBLOCK_START];
     super->block_num = BLOCK_NUM;
     super->block_used = 1 + 1+ METABLOCK_NUM;
-    printf("init done! %llu\n",super->block_used);
+    //printf("init done! %llu\n",super->block_used);
     return NULL;
 }
 
 static int oshfs_getattr(const char *path, struct stat *stbuf)
 {
+    //printf("getting attr\n");
     int ret = 0;
     struct filenode *node = get_filenode_by_path(path + 1);
     if(node)
@@ -287,18 +290,22 @@ static int oshfs_getattr(const char *path, struct stat *stbuf)
 
 static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
+    //printf("reading dir:%s\n",path+1);
     struct filenode * dir = get_filenode_by_path(path + 1);
     struct filenode * node = dir->child;
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
     while(node) {
+        //printf("  %s",node->filename);
         filler(buf, node->filename, &(node->st), 0);
         node = node->next;
     }
+    //printf("\n");
     return 0;
 }
 
 static int oshfs_mkdir(const char *path, mode_t mode) {
+    //printf("create dir:%s\n",path+1);
     create_filenode(path + 1, get_default_stat(1), 1);
     return 0;
 }
@@ -320,6 +327,7 @@ static int oshfs_open(const char *path, struct fuse_file_info *fi)
 
 static int oshfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
+    //printf("writing file:%s\n",path+1);
     struct filenode *node = get_filenode_by_path(path+1);
     if (!node) return -ENOENT;
 
@@ -473,6 +481,9 @@ int unlink_file(struct filenode * node) {
         node->prev->next = node->next;
     if (node->next)
         node->next->prev = node->prev;
+    if (node->parent)
+        if (node->parent->child == node)
+            node->parent->child = node->next;
 
     big_int block_to_free = node->content.head;
     big_int next_block_to_free;
@@ -495,10 +506,14 @@ int unlink_dir(struct filenode * dir) {
         dir->prev->next = dir->next;
     if (dir->next)
         dir->next->prev = dir->prev;
+    if (dir->parent)
+        if (dir->parent->child == dir)
+            dir->parent->child = dir->next;
 
     struct filenode * child = dir->child;
     struct filenode * next_child;
     while (child) {
+        //printf("  child %s\n",child->filename);
         next_child = child->next;
         if (child->dir)
             unlink_dir(child);
