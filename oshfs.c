@@ -31,8 +31,10 @@ struct filenode {
     struct content_t content;
 
     int dir;
-    struct filenode * child,parent;
-    struct filenode * next,prev;
+    struct filenode * child;
+    struct filenode * parent;
+    struct filenode * next;
+    struct filenode * prev;
 
     big_int self_block_id;
 
@@ -49,7 +51,7 @@ struct block {
     unsigned char data[BLOCK_DATA_SIZE];
 };
 
-static int get_default_stat(int is_dir) {
+static struct stat get_default_stat(int is_dir) {
     struct stat st;
     memset(&st, 0, sizeof(struct stat));
     if (is_dir)
@@ -170,28 +172,7 @@ big_int locate(struct filenode * node, off_t offset) {
     return p;
 }
 
-static struct filenode *get_filenode_by_path(const char *path)
-{
-    if (path[0]==0) return (struct filenode *)blocks[ROOTBLOCK_START];
-    struct filenode * parent = get_parent_dir_by_path(NULL, path);
-    struct filenode *node = parent->child;
-
-    char * name = path;
-    while (pos = strchr(name,'/'))
-        name = pos + 1;
-
-    while(node) {
-        if(strcmp(node->filename, name) != 0)
-            node = node->next;
-        else {
-            return node;
-        }
-    }
-    return NULL;
-}
-
-//path not includ root '/'
-struct filenode * get_parent_dir_by_path(struct filenode * parent,const char *path) {
+struct filenode *get_parent_dir_by_path(struct filenode * parent,const char *path) {
 
     if (!parent) parent = (struct filenode *)blocks[ROOTBLOCK_START];
     char name[MAX_FILENAME_LENGTH];
@@ -205,10 +186,30 @@ struct filenode * get_parent_dir_by_path(struct filenode * parent,const char *pa
     struct filenode * child = parent->child;
     while (child) {
         if (child->dir && strcmp(name,child->filename)==0)
-            return get_parent_dir(child , pos + 1);
+            return get_parent_dir_by_path(child , pos + 1);
         child = child->next;
     }
     return parent;
+}
+
+struct filenode *get_filenode_by_path(const char *path)
+{
+    if (path[0]==0) return (struct filenode *)blocks[ROOTBLOCK_START];
+    struct filenode * parent = get_parent_dir_by_path(NULL, path);
+    struct filenode *node = parent->child;
+
+    char * name = path, * pos;
+    while (pos = strchr(name,'/'))
+        name = pos + 1;
+
+    while(node) {
+        if(strcmp(node->filename, name) != 0)
+            node = node->next;
+        else {
+            return node;
+        }
+    }
+    return NULL;
 }
 
 static int create_filenode(const char *path, const struct stat st, int is_dir)
@@ -220,7 +221,7 @@ static int create_filenode(const char *path, const struct stat st, int is_dir)
         return 0;   //no more space
     }
 
-    char * name = path;
+    char * name = path, * pos;
     while (pos = strchr(name,'/'))
         name = pos + 1;
 
@@ -233,7 +234,7 @@ static int create_filenode(const char *path, const struct stat st, int is_dir)
     new->content.head = 0;
     new->content.tail = 0;
     new->self_block_id = block_id_for_filenode;
-    new->child=  = NULL;
+    new->child = NULL;
     new->next = new->parent->child;
     new->prev = NULL;
     new->next->prev = new;
@@ -464,7 +465,7 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
     return rsize;
 }
 
-static int unlink_file(struct filenode * node) {
+int unlink_file(struct filenode * node) {
     if (!node) return -ENOENT;
     if (node->dir) return -ENOENT;
 
@@ -486,7 +487,7 @@ static int unlink_file(struct filenode * node) {
 }
 
 //Recursively
-static int unlink_dir(struct filenode * dir) {
+int unlink_dir(struct filenode * dir) {
     if (!dir) return -ENOENT;
     if (!dir->dir) return -ENOENT;
 
@@ -525,7 +526,7 @@ static const struct fuse_operations op = {
     .read = oshfs_read,
     .unlink = oshfs_unlink,
     .rmdir = oshfs_rmdir,
-    .mkdir = oshfs.mkdir,
+    .mkdir = oshfs_mkdir,
 };
 
 int main(int argc, char *argv[])
