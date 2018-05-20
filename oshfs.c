@@ -273,9 +273,15 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 
     struct stat_block * stat = (struct stat_block *)blocks[STATBLOCK_START];
     big_int rest_block_num = stat->block_num - stat->block_used;
-    big_int request_block_num = (offset + size - node->st.st_size - 1 + BLOCK_DATA_SIZE)/BLOCK_DATA_SIZE;
+    big_int request_block_num;
+    if (offset + size - node->st.st_size >  + BLOCK_SIZE + 1)
+        request_block_num = (offset + size - node->st.st_size - 1 + BLOCK_SIZE)/BLOCK_DATA_SIZE;
+    else
+        request_block_num = 0;
+
    //printf("rest block num:%llu  file size:%lu  need block:%llu\n",rest_block_num,node->st.st_size,request_block_num); 
-if (request_block_num > rest_block_num) {
+
+    if (request_block_num > rest_block_num) {
         return -E2BIG;
    }
 
