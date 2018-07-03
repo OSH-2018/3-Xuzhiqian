@@ -430,31 +430,34 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
     if (!fnode) return -ENOENT;
     struct inode *node = fnode->link;
     if (!node) return -ENOENT;
+    big_int wsize = 0;
 
     //printf("write file:%s  write offset:%lu  write size:%lu\n",path,offset,size);
 
     struct stat_block * stat = (struct stat_block *)blocks[STATBLOCK_START];
     big_int rest_block_num = stat->block_num - stat->block_used;
     big_int request_block_num;
-    if (offset + size - node->st.st_size >  + BLOCK_SIZE + 1)
+    if (offset + size - 1 > node->st.st_size + BLOCK_SIZE)
         request_block_num = (offset + size - node->st.st_size - 1 + BLOCK_SIZE)/BLOCK_DATA_SIZE;
     else
         request_block_num = 0;
-
-   //printf("rest block num:%llu  file size:%lu  need block:%llu\n",rest_block_num,node->st.st_size,request_block_num); 
-
-    if (request_block_num > rest_block_num) {
-        return -E2BIG;
-   }
 
     big_int location_block_id = locate(node,offset);
 
     big_int location_bytewise = sizeof(big_int) + offset % BLOCK_DATA_SIZE;
 
-    if (offset % BLOCK_DATA_SIZE == 0 && offset != 0)
-        location_block_id = get_next_block(node,location_block_id);
+    if (offset % BLOCK_DATA_SIZE == 0 && offset != 0) {
+        big_int next_to_write = ((struct block *)blocks[location_block_id])->next;
+        if (next_to_write == 0) {
+            big_int new_blck = allocate_block();
+            ((struct block *)blocks[location_block_id])->next = new_blck;
+            next_to_write = new_blck;
+            node->content.tail = new_blck;
+        }
+        location_block_id = next_to_write;
+    }
     
-    big_int wsize = 0;
+    
     while (wsize < size) {
         unsigned char * location = location_bytewise + (unsigned char *)blocks[location_block_id];
 
@@ -541,19 +544,18 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
     if (!node) return -ENOENT;
     if (offset > node->st.st_size)
         return 0;
-
+    big_int rsize = 0;
     size = (offset + size <= node->st.st_size)?size:node->st.st_size-offset;
 
     big_int location_block_id = locate(node,offset);
     big_int location_bytewise = sizeof(big_int) + offset % BLOCK_DATA_SIZE;
 
     if (offset % BLOCK_DATA_SIZE == 0 && offset != 0) {
-        location_block_id = ((struct block *)blocks[location_block_id])->next;
-        if (location_block_id == 0)
-            return -E2BIG;
+        location_block_id = ((struct block *)blocks[location_block_id])->next;    
     }
-
-    big_int rsize = 0;
+    if (location_block_id == 0)
+            return rsize;
+    
 
     
     while (rsize < size) {
